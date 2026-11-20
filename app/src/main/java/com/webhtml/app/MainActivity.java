@@ -5,11 +5,13 @@ import android.app.Activity;
 import android.content.Context;
 import android.content.Intent;
 import android.content.pm.ActivityInfo;
+import android.content.res.Configuration;
 import android.graphics.Bitmap;
 import android.graphics.Color;
 import android.net.Uri;
 import android.os.Build;
 import android.os.Bundle;
+import android.view.KeyEvent;
 import android.view.MotionEvent;
 import android.view.View;
 import android.view.ViewGroup;
@@ -58,11 +60,16 @@ public class MainActivity extends AppCompatActivity {
     private boolean scrollBar = true;
     private boolean mobilView = true;
     private boolean background = false;
+    private boolean pipModeOn = false;
+
     private WebView webView;
     private WebView overlayWebView;
     private MenuControler menuControler;
     private DownloadHelper downloadHelper;
     private AllowCors allowCors;
+    private PipControler pipControler;
+
+    private boolean backLongPressTriggered = false;
 
     private ValueCallback<Uri[]> uploadMessage;
     private ActivityResultLauncher<Intent> fileChooserLauncher;
@@ -87,6 +94,7 @@ public class MainActivity extends AppCompatActivity {
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         loadConfigFromInternalStorage();
+        pipControler = new PipControler(this, pipModeOn);
 
         if (forceDark) {
             androidx.appcompat.app.AppCompatDelegate.setDefaultNightMode(
@@ -248,14 +256,7 @@ public class MainActivity extends AppCompatActivity {
                 int currentIndex = history.getCurrentIndex();
 
                 if (currentIndex <= 0 || !webView.canGoBack()) {
-                    try {
-                        Intent serviceIntent = new Intent(MainActivity.this, MediaService.class);
-                        stopService(serviceIntent);
-                    } catch (Exception ignored) {}
-
-                    finish();
-                    android.os.Process.killProcess(android.os.Process.myPid());
-                    System.exit(0);
+                    killAppCompletely();
                 } else {
                     webView.goBack();
                 }
@@ -302,18 +303,19 @@ public class MainActivity extends AppCompatActivity {
                 return handleUrlLoading(view, request.getUrl().toString());
             }
 
-            /* @Override
-            public boolean shouldOverrideUrlLoading(WebView view, String url) {
-                return handleUrlLoading(view, url);
-            } */
-
             private boolean handleUrlLoading(WebView view, String url) {
                 if (isExternalDomain(url)) {
                     try {
+                        if (pipControler != null) {
+                            pipControler.suppressNextLeaveHint();
+                        }
                         Intent intent = new Intent(Intent.ACTION_VIEW, Uri.parse(url));
                         view.getContext().startActivity(intent);
                         return true;
                     } catch (Exception e) {
+                        if (pipControler != null) {
+                            pipControler.resetSuppressLeaveHint();
+                        }
                         return true;
                     }
                 }
@@ -328,9 +330,15 @@ public class MainActivity extends AppCompatActivity {
                         if (intent != null) {
                             intent.addCategory(Intent.CATEGORY_BROWSABLE);
                             try {
+                                if (pipControler != null) {
+                                    pipControler.suppressNextLeaveHint();
+                                }
                                 startActivity(intent);
                                 return true;
                             } catch (Exception e) {
+                                if (pipControler != null) {
+                                    pipControler.resetSuppressLeaveHint();
+                                }
                                 String fallbackUrl = intent.getStringExtra("browser_fallback_url");
                                 if (fallbackUrl != null) {
                                     view.loadUrl(fallbackUrl);
@@ -343,10 +351,16 @@ public class MainActivity extends AppCompatActivity {
                 }
 
                 try {
+                    if (pipControler != null) {
+                        pipControler.suppressNextLeaveHint();
+                    }
                     Intent intent = new Intent(Intent.ACTION_VIEW, Uri.parse(url));
                     view.getContext().startActivity(intent);
                     return true;
                 } catch (Exception e) {
+                    if (pipControler != null) {
+                        pipControler.resetSuppressLeaveHint();
+                    }
                     return true;
                 }
             }
@@ -512,13 +526,68 @@ public class MainActivity extends AppCompatActivity {
         Intent intent = fileChooserParams.createIntent();
 
         try {
+            if (pipControler != null) {
+                pipControler.suppressNextLeaveHint();
+            }
             fileChooserLauncher.launch(intent);
         } catch (Exception e) {
+            if (pipControler != null) {
+                pipControler.resetSuppressLeaveHint();
+            }
             uploadMessage = null;
             return false;
         }
 
         return true;
+    }
+
+    @Override
+    public boolean dispatchKeyEvent(KeyEvent event) {
+        if (event.getKeyCode() == KeyEvent.KEYCODE_BACK) {
+            if (event.getAction() == KeyEvent.ACTION_DOWN) {
+                if (event.isLongPress() || event.getRepeatCount() > 0) {
+                    if (!backLongPressTriggered) {
+                        backLongPressTriggered = true;
+                        killAppCompletely();
+                    }
+                    return true;
+                }
+            } else if (event.getAction() == KeyEvent.ACTION_UP) {
+                if (backLongPressTriggered) {
+                    backLongPressTriggered = false;
+                    return true;
+                }
+            }
+        }
+        return super.dispatchKeyEvent(event);
+    }
+
+    private void killAppCompletely() {
+        try {
+            Intent serviceIntent = new Intent(MainActivity.this, MediaService.class);
+            stopService(serviceIntent);
+        } catch (Exception ignored) {}
+
+        finishAffinity();
+        finish();
+        android.os.Process.killProcess(android.os.Process.myPid());
+        System.exit(0);
+    }
+
+    @Override
+    protected void onUserLeaveHint() {
+        super.onUserLeaveHint();
+        if (pipControler != null) {
+            pipControler.onUserLeaveHint();
+        }
+    }
+
+    @Override
+    public void onPictureInPictureModeChanged(boolean isInPictureInPictureMode, Configuration newConfig) {
+        super.onPictureInPictureModeChanged(isInPictureInPictureMode, newConfig);
+        if (pipControler != null) {
+            pipControler.onPictureInPictureModeChanged(isInPictureInPictureMode, overlayWebView, webView);
+        }
     }
 
     @SuppressWarnings("deprecation")
@@ -558,6 +627,11 @@ public class MainActivity extends AppCompatActivity {
             scrollBar = parseBoolean(jsContent, "scrollBar", true);
             mobilView = parseBoolean(jsContent, "mobilView", true);
             background = parseBoolean(jsContent, "background", false);
+            pipModeOn = parseBoolean(jsContent, "pipModeOn", false);
+
+            if (pipControler != null) {
+                pipControler.setPipModeOn(pipModeOn);
+            }
 
         } catch (Exception e) {
             copyAssetToFile("appConfig.js", configFile);
@@ -679,6 +753,9 @@ public class MainActivity extends AppCompatActivity {
                     MainActivity act = (MainActivity) mContext;
                     if (act.webView != null) {
                         act.loadConfigFromInternalStorage();
+                        if (act.pipControler != null) {
+                            act.pipControler.setPipModeOn(act.pipModeOn);
+                        }
                         act.applyUserAgentPolicy(act.webView.getSettings(), act);
 
                         if (act.startURL != null && !act.startURL.trim().isEmpty() && !act.startURL.startsWith("file:///")) {
