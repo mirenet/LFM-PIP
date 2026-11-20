@@ -69,7 +69,7 @@ public class PipControler {
             }
             try {
                 PictureInPictureParams.Builder paramsBuilder = new PictureInPictureParams.Builder();
-                paramsBuilder.setAspectRatio(new Rational(9, 16));
+                paramsBuilder.setAspectRatio(new Rational(1, 1));
                 activity.enterPictureInPictureMode(paramsBuilder.build());
             } catch (Exception ignored) {}
         }
