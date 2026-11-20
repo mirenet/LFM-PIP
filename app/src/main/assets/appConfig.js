@@ -9,6 +9,7 @@ forceDark: false,
 refreshOn: false,
 scrollBar: true,
 mobilView: true,
+pipModeOn: false,
 background: false
 };
 
