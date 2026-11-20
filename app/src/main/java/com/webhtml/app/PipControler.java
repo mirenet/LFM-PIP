@@ -4,7 +4,6 @@ import android.app.Activity;
 import android.app.PictureInPictureParams;
 import android.content.pm.PackageManager;
 import android.os.Build;
-import android.util.Rational;
 import android.view.View;
 import android.webkit.WebView;
 
@@ -61,9 +60,8 @@ public class PipControler {
                 return;
             }
             try {
-                PictureInPictureParams.Builder paramsBuilder = new PictureInPictureParams.Builder();
-                paramsBuilder.setAspectRatio(new Rational(1, 1));
-                activity.enterPictureInPictureMode(paramsBuilder.build());
+                PictureInPictureParams params = new PictureInPictureParams.Builder().build();
+                activity.enterPictureInPictureMode(params);
             } catch (Exception ignored) {}
         }
     }
@@ -74,6 +72,7 @@ public class PipControler {
         }
         if (webView != null && isInPictureInPictureMode) {
             webView.onResume();
+            webView.resumeTimers();
         }
     }
 }
