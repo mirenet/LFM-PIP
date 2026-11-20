@@ -4,26 +4,40 @@ import android.app.Activity;
 import android.app.PictureInPictureParams;
 import android.content.pm.PackageManager;
 import android.os.Build;
+import android.util.Rational;
 import android.view.View;
 import android.webkit.WebView;
 
 public class PipControler {
 
     private final Activity activity;
-    private boolean pipModeOn;
+    private String pipMode;
     private boolean suppressNextLeaveHint = false;
 
-    public PipControler(Activity activity, boolean pipModeOn) {
+    public PipControler(Activity activity, String pipMode) {
         this.activity = activity;
-        this.pipModeOn = pipModeOn;
+        setPipModeOn(pipMode);
     }
 
-    public void setPipModeOn(boolean pipModeOn) {
-        this.pipModeOn = pipModeOn;
+    public void setPipModeOn(String pipMode) {
+        if (pipMode == null) {
+            this.pipMode = "false";
+            return;
+        }
+        String normalized = pipMode.trim().toLowerCase();
+        if ("default".equals(normalized) || "portrait".equals(normalized)) {
+            this.pipMode = normalized;
+        } else {
+            this.pipMode = "false";
+        }
     }
 
-    public boolean isPipModeOn() {
-        return pipModeOn;
+    public String getPipModeOn() {
+        return pipMode;
+    }
+
+    public boolean isPipEnabled() {
+        return "default".equals(pipMode) || "portrait".equals(pipMode);
     }
 
     public void suppressNextLeaveHint() {
@@ -47,7 +61,7 @@ public class PipControler {
             return;
         }
 
-        if (!pipModeOn || !isPipSupported()) {
+        if (!isPipEnabled() || !isPipSupported()) {
             return;
         }
 
@@ -60,8 +74,14 @@ public class PipControler {
                 return;
             }
             try {
-                PictureInPictureParams params = new PictureInPictureParams.Builder().build();
-                activity.enterPictureInPictureMode(params);
+                PictureInPictureParams.Builder paramsBuilder = new PictureInPictureParams.Builder();
+                if ("portrait".equals(pipMode)) {
+                    paramsBuilder.setAspectRatio(new Rational(9, 16));
+                } else {
+                    // "default" -> kvadrat
+                    paramsBuilder.setAspectRatio(new Rational(1, 1));
+                }
+                activity.enterPictureInPictureMode(paramsBuilder.build());
             } catch (Exception ignored) {}
         }
     }
