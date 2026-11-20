@@ -60,17 +60,14 @@ public class MainActivity extends AppCompatActivity {
     private boolean scrollBar = true;
     private boolean mobilView = true;
     private boolean background = false;
-    private boolean pipModeOn = false;
-    private Object pipModeRaw = Boolean.FALSE;
-
+    private Object pipModeConfigValue = false; // [PIP] čuva true / "true" / false iz appConfig.js
+    private boolean backLongPressTriggered = false; // [BACK] sprečava duplu akciju pri puštanju dugog pritiska
     private WebView webView;
     private WebView overlayWebView;
     private MenuControler menuControler;
     private DownloadHelper downloadHelper;
     private AllowCors allowCors;
-    private PipControler pipControler;
-
-    private boolean backLongPressTriggered = false;
+    private PipControler pipControler; // [PIP]
 
     private ValueCallback<Uri[]> uploadMessage;
     private ActivityResultLauncher<Intent> fileChooserLauncher;
@@ -91,11 +88,21 @@ public class MainActivity extends AppCompatActivity {
         }
     }
 
+    private void killAppImmediately() {
+        try {
+            Intent serviceIntent = new Intent(MainActivity.this, MediaService.class);
+            stopService(serviceIntent);
+        } catch (Exception ignored) {}
+
+        finish();
+        android.os.Process.killProcess(android.os.Process.myPid());
+        System.exit(0);
+    }
+
     @SuppressLint({"SetJavaScriptEnabled", "QueryPermissionsNeeded"})
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         loadConfigFromInternalStorage();
-        pipControler = new PipControler(this, pipModeRaw);
 
         if (forceDark) {
             androidx.appcompat.app.AppCompatDelegate.setDefaultNightMode(
@@ -104,6 +111,8 @@ public class MainActivity extends AppCompatActivity {
         }
 
         super.onCreate(savedInstanceState);
+
+        pipControler = new PipControler(this, pipModeConfigValue); // [PIP]
 
         fileChooserLauncher = registerForActivityResult(
                 new ActivityResultContracts.StartActivityForResult(),
@@ -248,6 +257,11 @@ public class MainActivity extends AppCompatActivity {
         getOnBackPressedDispatcher().addCallback(this, new androidx.activity.OnBackPressedCallback(true) {
             @Override
             public void handleOnBackPressed() {
+                if (backLongPressTriggered) {
+                    backLongPressTriggered = false;
+                    return;
+                }
+
                 if (menuControler != null && menuControler.isMenuVisible()) {
                     menuControler.toggleMenu();
                     return;
@@ -257,7 +271,7 @@ public class MainActivity extends AppCompatActivity {
                 int currentIndex = history.getCurrentIndex();
 
                 if (currentIndex <= 0 || !webView.canGoBack()) {
-                    killAppCompletely();
+                    killAppImmediately();
                 } else {
                     webView.goBack();
                 }
@@ -307,16 +321,11 @@ public class MainActivity extends AppCompatActivity {
             private boolean handleUrlLoading(WebView view, String url) {
                 if (isExternalDomain(url)) {
                     try {
-                        if (pipControler != null) {
-                            pipControler.suppressNextLeaveHint();
-                        }
+                        if (pipControler != null) pipControler.suppressNextLeaveHint(); // [PIP]
                         Intent intent = new Intent(Intent.ACTION_VIEW, Uri.parse(url));
                         view.getContext().startActivity(intent);
                         return true;
                     } catch (Exception e) {
-                        if (pipControler != null) {
-                            pipControler.resetSuppressLeaveHint();
-                        }
                         return true;
                     }
                 }
@@ -327,19 +336,14 @@ public class MainActivity extends AppCompatActivity {
 
                 if (url.startsWith("intent://")) {
                     try {
+                        if (pipControler != null) pipControler.suppressNextLeaveHint(); // [PIP]
                         Intent intent = Intent.parseUri(url, Intent.URI_INTENT_SCHEME);
                         if (intent != null) {
                             intent.addCategory(Intent.CATEGORY_BROWSABLE);
                             try {
-                                if (pipControler != null) {
-                                    pipControler.suppressNextLeaveHint();
-                                }
                                 startActivity(intent);
                                 return true;
                             } catch (Exception e) {
-                                if (pipControler != null) {
-                                    pipControler.resetSuppressLeaveHint();
-                                }
                                 String fallbackUrl = intent.getStringExtra("browser_fallback_url");
                                 if (fallbackUrl != null) {
                                     view.loadUrl(fallbackUrl);
@@ -352,16 +356,11 @@ public class MainActivity extends AppCompatActivity {
                 }
 
                 try {
-                    if (pipControler != null) {
-                        pipControler.suppressNextLeaveHint();
-                    }
+                    if (pipControler != null) pipControler.suppressNextLeaveHint(); // [PIP]
                     Intent intent = new Intent(Intent.ACTION_VIEW, Uri.parse(url));
                     view.getContext().startActivity(intent);
                     return true;
                 } catch (Exception e) {
-                    if (pipControler != null) {
-                        pipControler.resetSuppressLeaveHint();
-                    }
                     return true;
                 }
             }
@@ -517,6 +516,31 @@ public class MainActivity extends AppCompatActivity {
         }
     }
 
+    // [BACK] Dugi pritisak na Back dugme odmah ubija aplikaciju
+    @Override
+    public boolean onKeyDown(int keyCode, KeyEvent event) {
+        if (keyCode == KeyEvent.KEYCODE_BACK) {
+            if (event.isLongPress()) {
+                backLongPressTriggered = true;
+                killAppImmediately();
+                return true;
+            }
+            event.startTracking();
+            return true;
+        }
+        return super.onKeyDown(keyCode, event);
+    }
+
+    @Override
+    public boolean onKeyLongPress(int keyCode, KeyEvent event) {
+        if (keyCode == KeyEvent.KEYCODE_BACK) {
+            backLongPressTriggered = true;
+            killAppImmediately();
+            return true;
+        }
+        return super.onKeyLongPress(keyCode, event);
+    }
+
     private boolean launchFileChooser(ValueCallback<Uri[]> filePathCallback, WebChromeClient.FileChooserParams fileChooserParams) {
         if (uploadMessage != null) {
             uploadMessage.onReceiveValue(null);
@@ -527,68 +551,14 @@ public class MainActivity extends AppCompatActivity {
         Intent intent = fileChooserParams.createIntent();
 
         try {
-            if (pipControler != null) {
-                pipControler.suppressNextLeaveHint();
-            }
+            if (pipControler != null) pipControler.suppressNextLeaveHint(); // [PIP]
             fileChooserLauncher.launch(intent);
         } catch (Exception e) {
-            if (pipControler != null) {
-                pipControler.resetSuppressLeaveHint();
-            }
             uploadMessage = null;
             return false;
         }
 
         return true;
-    }
-
-    @Override
-    public boolean dispatchKeyEvent(KeyEvent event) {
-        if (event.getKeyCode() == KeyEvent.KEYCODE_BACK) {
-            if (event.getAction() == KeyEvent.ACTION_DOWN) {
-                if (event.isLongPress() || event.getRepeatCount() > 0) {
-                    if (!backLongPressTriggered) {
-                        backLongPressTriggered = true;
-                        killAppCompletely();
-                    }
-                    return true;
-                }
-            } else if (event.getAction() == KeyEvent.ACTION_UP) {
-                if (backLongPressTriggered) {
-                    backLongPressTriggered = false;
-                    return true;
-                }
-            }
-        }
-        return super.dispatchKeyEvent(event);
-    }
-
-    private void killAppCompletely() {
-        try {
-            Intent serviceIntent = new Intent(MainActivity.this, MediaService.class);
-            stopService(serviceIntent);
-        } catch (Exception ignored) {}
-
-        finishAffinity();
-        finish();
-        android.os.Process.killProcess(android.os.Process.myPid());
-        System.exit(0);
-    }
-
-    @Override
-    protected void onUserLeaveHint() {
-        super.onUserLeaveHint();
-        if (pipControler != null) {
-            pipControler.onUserLeaveHint();
-        }
-    }
-
-    @Override
-    public void onPictureInPictureModeChanged(boolean isInPictureInPictureMode, Configuration newConfig) {
-        super.onPictureInPictureModeChanged(isInPictureInPictureMode, newConfig);
-        if (pipControler != null) {
-            pipControler.onPictureInPictureModeChanged(isInPictureInPictureMode, overlayWebView, webView);
-        }
     }
 
     @SuppressWarnings("deprecation")
@@ -602,6 +572,48 @@ public class MainActivity extends AppCompatActivity {
             return true;
         }
         return super.dispatchTouchEvent(event);
+    }
+
+    // [PIP] Pokretanje PiP režima kada korisnik napusti aktivnost
+    @Override
+    protected void onUserLeaveHint() {
+        super.onUserLeaveHint();
+        if (pipControler != null) {
+            pipControler.onUserLeaveHint();
+        }
+    }
+
+    // [PIP] Drži WebView aktivnim kao u foreground-u tokom PiP režima i poštuje background: true
+    @Override
+    public void onPictureInPictureModeChanged(boolean isInPictureInPictureMode, Configuration newConfig) {
+        super.onPictureInPictureModeChanged(isInPictureInPictureMode, newConfig);
+        if (pipControler != null) {
+            pipControler.onPictureInPictureModeChanged(isInPictureInPictureMode, overlayWebView, webView);
+        }
+        if (isInPictureInPictureMode && webView != null) {
+            webView.onResume();
+            webView.resumeTimers();
+            if (background) {
+                String antiPauseJs =
+                        "(function() {" +
+                        "   try {" +
+                        "       Object.defineProperty(document, 'hidden', { get: function() { return false; }, configurable: true });" +
+                        "       Object.defineProperty(document, 'visibilityState', { get: function() { return 'visible'; }, configurable: true });" +
+                        "   } catch(err) {}" +
+                        "})();";
+                webView.evaluateJavascript(antiPauseJs, null);
+            }
+        } else if (!isInPictureInPictureMode && pipControler != null) {
+            pipControler.resetSuppressLeaveHint();
+        }
+    }
+
+    private Object parsePipModeValue(String content) {
+        String strVal = parseString(content, "pipModeOn", null);
+        if (strVal != null) {
+            return strVal;
+        }
+        return parseBoolean(content, "pipModeOn", false);
     }
 
     private void loadConfigFromInternalStorage() {
@@ -628,12 +640,7 @@ public class MainActivity extends AppCompatActivity {
             scrollBar = parseBoolean(jsContent, "scrollBar", true);
             mobilView = parseBoolean(jsContent, "mobilView", true);
             background = parseBoolean(jsContent, "background", false);
-            pipModeRaw = parsePipMode(jsContent);
-            pipModeOn = (pipModeRaw instanceof Boolean) ? (Boolean) pipModeRaw : "true".equals(String.valueOf(pipModeRaw));
-
-            if (pipControler != null) {
-                pipControler.setPipModeOn(pipModeRaw);
-            }
+            pipModeConfigValue = parsePipModeValue(jsContent); // [PIP]
 
         } catch (Exception e) {
             copyAssetToFile("appConfig.js", configFile);
@@ -722,6 +729,10 @@ public class MainActivity extends AppCompatActivity {
         @JavascriptInterface
         public void restartApp() {
             try {
+                if (mContext instanceof MainActivity) {
+                    MainActivity act = (MainActivity) mContext;
+                    if (act.pipControler != null) act.pipControler.suppressNextLeaveHint(); // [PIP]
+                }
                 Intent intent = mContext.getPackageManager().getLaunchIntentForPackage(mContext.getPackageName());
                 if (intent != null) {
                     intent.addFlags(Intent.FLAG_ACTIVITY_CLEAR_TOP | Intent.FLAG_ACTIVITY_NEW_TASK);
@@ -756,7 +767,7 @@ public class MainActivity extends AppCompatActivity {
                     if (act.webView != null) {
                         act.loadConfigFromInternalStorage();
                         if (act.pipControler != null) {
-                            act.pipControler.setPipModeOn(act.pipModeRaw);
+                            act.pipControler.setPipModeOn(act.pipModeConfigValue); // [PIP]
                         }
                         act.applyUserAgentPolicy(act.webView.getSettings(), act);
 
@@ -827,22 +838,6 @@ public class MainActivity extends AppCompatActivity {
         }
     }
 
-    private Object parsePipMode(String content) {
-        try {
-            Pattern quotedTrue = Pattern.compile("pipModeOn\\s*:\\s*[\"']true[\"']", Pattern.CASE_INSENSITIVE);
-            if (quotedTrue.matcher(content).find()) {
-                return "true";
-            }
-
-            Pattern unquotedTrue = Pattern.compile("pipModeOn\\s*:\\s*true\\b", Pattern.CASE_INSENSITIVE);
-            if (unquotedTrue.matcher(content).find()) {
-                return Boolean.TRUE;
-            }
-        } catch (Exception ignored) {}
-
-        return Boolean.FALSE;
-    }
-
     private boolean parseBoolean(String content, String key, boolean defaultValue) {
         try {
             Pattern pattern = Pattern.compile(key + "\\s*:\\s*(true|false)", Pattern.CASE_INSENSITIVE);
@@ -903,9 +898,12 @@ public class MainActivity extends AppCompatActivity {
     @Override
     protected void onPause() {
         super.onPause();
+        boolean inPip = Build.VERSION.SDK_INT >= Build.VERSION_CODES.O && isInPictureInPictureMode(); // [PIP]
         if (webView != null) {
-            if (!background) {
+            if (!background && !inPip) { // [PIP] ostaje aktivan i u PiP i u background režimu
                 webView.onPause();
+            } else {
+                webView.resumeTimers();
             }
         }
         if (overlayWebView != null) overlayWebView.onPause();
@@ -916,12 +914,9 @@ public class MainActivity extends AppCompatActivity {
         super.onResume();
         if (webView != null) {
             webView.onResume();
-            webView.resumeTimers();
+            webView.resumeTimers(); // [PIP]
         }
         if (overlayWebView != null) overlayWebView.onResume();
-        if (pipControler != null) {
-            pipControler.resetSuppressLeaveHint();
-        }
 
         if (background) {
             try {
