@@ -27,10 +27,6 @@ public class PipControler {
         return pipModeOn;
     }
 
-    /**
-     * Pozovi kada aplikacija sama pokreće eksterni/sistemski Intent
-     * (npr. file chooser), da ne bi aktivirala PiP.
-     */
     public void suppressNextLeaveHint() {
         this.suppressNextLeaveHint = true;
     }
@@ -46,9 +42,6 @@ public class PipControler {
         return activity.getPackageManager().hasSystemFeature(PackageManager.FEATURE_PICTURE_IN_PICTURE);
     }
 
-    /**
-     * Poziva se iz MainActivity.onUserLeaveHint() - okida se na Home i Recents dugme.
-     */
     public void onUserLeaveHint() {
         if (suppressNextLeaveHint) {
             suppressNextLeaveHint = false;
@@ -75,15 +68,28 @@ public class PipControler {
         }
     }
 
-    /**
-     * Poziva se iz MainActivity.onPictureInPictureModeChanged(...)
-     */
     public void onPictureInPictureModeChanged(boolean isInPictureInPictureMode, View overlayWebView, WebView webView) {
         if (overlayWebView != null && isInPictureInPictureMode) {
             overlayWebView.setVisibility(View.GONE);
         }
-        if (webView != null && isInPictureInPictureMode) {
-            webView.onResume();
+        if (webView != null) {
+            if (isInPictureInPictureMode) {
+                webView.onResume();
+                webView.resumeTimers();
+                String resumeVideoJs =
+                        "(function() {" +
+                        "  setTimeout(function() {" +
+                        "    var videos = document.querySelectorAll('video');" +
+                        "    videos.forEach(function(v) {" +
+                        "      if (v.paused) { v.play().catch(function(){}); }" +
+                        "    });" +
+                        "  }, 250);" +
+                        "})();";
+                webView.evaluateJavascript(resumeVideoJs, null);
+            } else {
+                webView.onResume();
+                webView.resumeTimers();
+            }
         }
     }
 }
