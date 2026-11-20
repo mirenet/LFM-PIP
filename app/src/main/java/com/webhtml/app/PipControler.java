@@ -6,6 +6,7 @@ import android.content.pm.PackageManager;
 import android.os.Build;
 import android.util.Rational;
 import android.view.View;
+import android.webkit.WebView;
 
 public class PipControler {
 
@@ -77,7 +78,7 @@ public class PipControler {
     /**
      * Poziva se iz MainActivity.onPictureInPictureModeChanged(...)
      */
-    public void onPictureInPictureModeChanged(boolean isInPictureInPictureMode, View overlayWebView, View webView) {
+    public void onPictureInPictureModeChanged(boolean isInPictureInPictureMode, View overlayWebView, WebView webView) {
         if (overlayWebView != null && isInPictureInPictureMode) {
             overlayWebView.setVisibility(View.GONE);
         }
