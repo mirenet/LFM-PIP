@@ -28,7 +28,7 @@ public class PipControler {
 
     /**
      * Pozovi kada aplikacija sama pokreće eksterni/sistemski Intent
-     * (npr. file chooser ili eksterni link), da ne bi aktivirala PiP.
+     * (npr. file chooser), da ne bi aktivirala PiP.
      */
     public void suppressNextLeaveHint() {
         this.suppressNextLeaveHint = true;
@@ -78,10 +78,8 @@ public class PipControler {
      * Poziva se iz MainActivity.onPictureInPictureModeChanged(...)
      */
     public void onPictureInPictureModeChanged(boolean isInPictureInPictureMode, View overlayWebView, View webView) {
-        if (overlayWebView != null) {
-            if (isInPictureInPictureMode) {
-                overlayWebView.setVisibility(View.GONE);
-            }
+        if (overlayWebView != null && isInPictureInPictureMode) {
+            overlayWebView.setVisibility(View.GONE);
         }
         if (webView != null && isInPictureInPictureMode) {
             webView.onResume();
