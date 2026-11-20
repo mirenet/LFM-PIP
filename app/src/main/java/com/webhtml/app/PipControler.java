@@ -72,24 +72,8 @@ public class PipControler {
         if (overlayWebView != null && isInPictureInPictureMode) {
             overlayWebView.setVisibility(View.GONE);
         }
-        if (webView != null) {
-            if (isInPictureInPictureMode) {
-                webView.onResume();
-                webView.resumeTimers();
-                String resumeVideoJs =
-                        "(function() {" +
-                        "  setTimeout(function() {" +
-                        "    var videos = document.querySelectorAll('video');" +
-                        "    videos.forEach(function(v) {" +
-                        "      if (v.paused) { v.play().catch(function(){}); }" +
-                        "    });" +
-                        "  }, 250);" +
-                        "})();";
-                webView.evaluateJavascript(resumeVideoJs, null);
-            } else {
-                webView.onResume();
-                webView.resumeTimers();
-            }
+        if (webView != null && isInPictureInPictureMode) {
+            webView.onResume();
         }
     }
 }
