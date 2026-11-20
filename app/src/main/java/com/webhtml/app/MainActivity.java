@@ -61,6 +61,7 @@ public class MainActivity extends AppCompatActivity {
     private boolean mobilView = true;
     private boolean background = false;
     private boolean pipModeOn = false;
+    private Object pipModeRaw = Boolean.FALSE;
 
     private WebView webView;
     private WebView overlayWebView;
@@ -94,7 +95,7 @@ public class MainActivity extends AppCompatActivity {
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         loadConfigFromInternalStorage();
-        pipControler = new PipControler(this, pipModeOn);
+        pipControler = new PipControler(this, pipModeRaw);
 
         if (forceDark) {
             androidx.appcompat.app.AppCompatDelegate.setDefaultNightMode(
@@ -627,10 +628,11 @@ public class MainActivity extends AppCompatActivity {
             scrollBar = parseBoolean(jsContent, "scrollBar", true);
             mobilView = parseBoolean(jsContent, "mobilView", true);
             background = parseBoolean(jsContent, "background", false);
-            pipModeOn = parseBoolean(jsContent, "pipModeOn", false);
+            pipModeRaw = parsePipMode(jsContent);
+            pipModeOn = (pipModeRaw instanceof Boolean) ? (Boolean) pipModeRaw : "true".equals(String.valueOf(pipModeRaw));
 
             if (pipControler != null) {
-                pipControler.setPipModeOn(pipModeOn);
+                pipControler.setPipModeOn(pipModeRaw);
             }
 
         } catch (Exception e) {
@@ -754,7 +756,7 @@ public class MainActivity extends AppCompatActivity {
                     if (act.webView != null) {
                         act.loadConfigFromInternalStorage();
                         if (act.pipControler != null) {
-                            act.pipControler.setPipModeOn(act.pipModeOn);
+                            act.pipControler.setPipModeOn(act.pipModeRaw);
                         }
                         act.applyUserAgentPolicy(act.webView.getSettings(), act);
 
@@ -823,6 +825,22 @@ public class MainActivity extends AppCompatActivity {
                 });
             }
         }
+    }
+
+    private Object parsePipMode(String content) {
+        try {
+            Pattern quotedTrue = Pattern.compile("pipModeOn\\s*:\\s*[\"']true[\"']", Pattern.CASE_INSENSITIVE);
+            if (quotedTrue.matcher(content).find()) {
+                return "true";
+            }
+
+            Pattern unquotedTrue = Pattern.compile("pipModeOn\\s*:\\s*true\\b", Pattern.CASE_INSENSITIVE);
+            if (unquotedTrue.matcher(content).find()) {
+                return Boolean.TRUE;
+            }
+        } catch (Exception ignored) {}
+
+        return Boolean.FALSE;
     }
 
     private boolean parseBoolean(String content, String key, boolean defaultValue) {
@@ -896,8 +914,14 @@ public class MainActivity extends AppCompatActivity {
     @Override
     protected void onResume() {
         super.onResume();
-        if (webView != null) webView.onResume();
+        if (webView != null) {
+            webView.onResume();
+            webView.resumeTimers();
+        }
         if (overlayWebView != null) overlayWebView.onResume();
+        if (pipControler != null) {
+            pipControler.resetSuppressLeaveHint();
+        }
 
         if (background) {
             try {
