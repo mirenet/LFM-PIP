@@ -28,6 +28,7 @@
         <activity
             android:name="com.webhtml.app.MainActivity"
             android:exported="true"
+            android:supportsPictureInPicture="true"
             android:configChanges="orientation|screenSize|screenLayout|keyboardHidden|smallestScreenSize">
             
             <intent-filter>
