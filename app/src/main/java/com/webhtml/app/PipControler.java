@@ -116,21 +116,24 @@ public class PipControler {
             }
         } else if (wasInPip) {
             wasInPip = false;
-            // Kada korisnik zatvori PiP prozor (npr. na X), zaustavi reprodukciju i servis ako se aktivnost zatvara ili ide u pozadinu
-            if (webView != null) {
-                webView.evaluateJavascript(
-                        "(function() {" +
-                        "  try {" +
-                        "    document.querySelectorAll('video, audio').forEach(function(m) { try { m.pause(); } catch(e) {} });" +
-                        "  } catch(e) {}" +
-                        "})();",
-                        null
-                );
-            }
-            if (activity != null && (activity.isFinishing() || activity.isDestroyed())) {
+            boolean closingPip = activity != null && (activity.isFinishing() || activity.isDestroyed());
+            if (closingPip) {
+                if (webView != null) {
+                    webView.evaluateJavascript(
+                            "(function() {" +
+                            "  try {" +
+                            "    document.querySelectorAll('video, audio').forEach(function(m) { try { m.pause(); } catch(e) {} });" +
+                            "  } catch(e) {}" +
+                            "})();",
+                            null
+                    );
+                }
                 try {
                     activity.stopService(new Intent(activity, MediaService.class));
                 } catch (Exception ignored) {}
+            } else if (webView != null) {
+                webView.onResume();
+                webView.resumeTimers();
             }
         }
     }
