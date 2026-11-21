@@ -110,5 +110,43 @@ public class PipControler {
             webView.onResume();
             webView.resumeTimers();
         }
+        applyVideoFocus(isInPictureInPictureMode, webView);
+    }
+
+    private void applyVideoFocus(boolean enterPip, WebView webView) {
+        if (webView == null) return;
+        String currentUrl = webView.getUrl();
+        if (currentUrl != null && (currentUrl.contains("youtube.com") || currentUrl.contains("youtu.be"))) {
+            return;
+        }
+
+        String js = enterPip
+            ? "(function() {" +
+              "  try {" +
+              "    var videos = Array.from(document.querySelectorAll('video'));" +
+              "    if (!videos.length) return;" +
+              "    videos.sort(function(a, b) { return (b.clientWidth * b.clientHeight) - (a.clientWidth * a.clientHeight); });" +
+              "    var v = videos[0];" +
+              "    var target = (v.parentElement && v.parentElement.clientWidth >= window.innerWidth * 0.7) ? v.parentElement : v;" +
+              "    window.__pipSaved = { el: target, style: target.getAttribute('style') || '', overflow: document.documentElement.style.overflow };" +
+              "    document.documentElement.style.overflow = 'hidden';" +
+              "    target.style.cssText = 'position:fixed !important;top:0 !important;left:0 !important;width:100vw !important;height:100vh !important;max-width:100vw !important;max-height:100vh !important;z-index:2147483647 !important;background:#000 !important;margin:0 !important;padding:0 !important;';" +
+              "    v.style.cssText = 'width:100% !important;height:100% !important;object-fit:contain !important;background:#000 !important;';" +
+              "  } catch(e) {}" +
+              "})();"
+            : "(function() {" +
+              "  try {" +
+              "    if (window.__pipSaved) {" +
+              "      var s = window.__pipSaved;" +
+              "      if (s.el) { if (s.style) s.el.setAttribute('style', s.style); else s.el.removeAttribute('style'); }" +
+              "      document.documentElement.style.overflow = s.overflow || '';" +
+              "      var v = s.el ? s.el.querySelector('video') : null;" +
+              "      if (v) v.removeAttribute('style');" +
+              "      window.__pipSaved = null;" +
+              "    }" +
+              "  } catch(e) {}" +
+              "})();";
+
+        webView.evaluateJavascript(js, null);
     }
 }
