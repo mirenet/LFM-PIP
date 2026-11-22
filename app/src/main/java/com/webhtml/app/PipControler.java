@@ -125,8 +125,9 @@ public class PipControler {
     };
 
     private final View.OnLayoutChangeListener layoutChangeListener = (v, left, top, right, bottom, oldLeft, oldTop, oldRight, oldBottom) -> {
-        if (wasInPip && attachedWebView != null) {
-            if (left != oldLeft || top != oldTop || right != oldRight || bottom != oldBottom) {
+        if (attachedWebView != null && (left != oldLeft || top != oldTop || right != oldRight || bottom != oldBottom)) {
+            refreshAspectAsync(attachedWebView, false);
+            if (wasInPip) {
                 scheduleVideoRefresh();
             }
         }
@@ -183,7 +184,7 @@ public class PipControler {
     public void attachTo(WebView webView) {
         if (webView == null) return;
         this.attachedWebView = webView;
-        updateVideoAspectFromWebView(webView);
+        refreshAspectAsync(webView, false);
         webView.removeOnLayoutChangeListener(layoutChangeListener);
         webView.addOnLayoutChangeListener(layoutChangeListener);
     }
@@ -248,6 +249,10 @@ public class PipControler {
     }
 
     public void updateVideoAspectFromWebView(WebView webView) {
+        refreshAspectAsync(webView, wasInPip);
+    }
+
+    private void refreshAspectAsync(WebView webView, boolean applyToActivePip) {
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O || webView == null) return;
         webView.evaluateJavascript(JS_FIND_LARGEST_VIDEO_NORM, result -> {
             if (result == null || "null".equals(result) || "\"null\"".equals(result)) {
@@ -269,6 +274,15 @@ public class PipControler {
                     detectedPortraitVideo = portrait;
                     detectedAspectRatio = clamped;
                     saveCurrentMode(portrait, clamped);
+
+                    if (applyToActivePip && activity != null && activity.isInPictureInPictureMode()) {
+                        try {
+                            PictureInPictureParams params = new PictureInPictureParams.Builder()
+                                    .setAspectRatio(clamped)
+                                    .build();
+                            activity.setPictureInPictureParams(params);
+                        } catch (Exception ignored) {}
+                    }
                 }
             } catch (Exception ignored) {}
         });
@@ -312,7 +326,7 @@ public class PipControler {
                 return;
             }
             if (attachedWebView != null) {
-                updateVideoAspectFromWebView(attachedWebView);
+                refreshAspectAsync(attachedWebView, false);
             }
             try {
                 PictureInPictureParams.Builder paramsBuilder = new PictureInPictureParams.Builder();
@@ -325,7 +339,7 @@ public class PipControler {
     public void onPictureInPictureModeChanged(boolean isInPictureInPictureMode, View overlayWebView, WebView webView) {
         if (isInPictureInPictureMode) {
             wasInPip = true;
-            attachTo(webView);
+            this.attachedWebView = webView;
             resetWebViewTransform(webView);
             if (overlayWebView != null) {
                 overlayWebView.setVisibility(View.GONE);
@@ -333,6 +347,7 @@ public class PipControler {
             if (webView != null) {
                 webView.onResume();
                 webView.resumeTimers();
+                refreshAspectAsync(webView, true);
             }
             scheduleVideoRefresh();
         } else if (wasInPip) {
@@ -367,10 +382,9 @@ public class PipControler {
     private void tryIsolateActiveVideo(WebView webView) {
         if (!wasInPip || webView == null) return;
         resetWebViewTransform(webView);
-        updateVideoAspectFromWebView(webView);
 
         webView.evaluateJavascript(JS_ISOLATE_IF_PLAYING, raw -> {
-            if (!wasInPip) return;
+            if (!wasInPip || attachedWebView == null) return;
             try {
                 String clean = raw == null ? "" : raw.trim();
                 if (clean.startsWith("\"") && clean.endsWith("\"") && clean.length() >= 2) {
@@ -382,7 +396,7 @@ public class PipControler {
                 boolean ok = obj.optBoolean("ok", false);
                 double startTime = obj.optDouble("t", -1);
                 if (!ok || startTime < 0) {
-                    useDefaultPipFallback(webView);
+                    useDefaultPipFallback(attachedWebView);
                     return;
                 }
 
@@ -390,15 +404,15 @@ public class PipControler {
                     if (!wasInPip || attachedWebView == null) return;
                     String verifyJs = String.format(Locale.US, JS_VERIFY_VIDEO_MOVING, startTime);
                     attachedWebView.evaluateJavascript(verifyJs, movingRaw -> {
-                        if (!wasInPip) return;
+                        if (!wasInPip || attachedWebView == null) return;
                         boolean moving = "true".equalsIgnoreCase(String.valueOf(movingRaw).replace("\"", "").trim());
                         if (!moving) {
                             useDefaultPipFallback(attachedWebView);
                         }
                     });
-                }, 350);
+                }, 220);
             } catch (Exception e) {
-                useDefaultPipFallback(webView);
+                useDefaultPipFallback(attachedWebView);
             }
         });
     }
