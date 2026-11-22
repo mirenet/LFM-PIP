@@ -126,8 +126,9 @@ public class PipControler {
 
     private final View.OnLayoutChangeListener layoutChangeListener = (v, left, top, right, bottom, oldLeft, oldTop, oldRight, oldBottom) -> {
         if (attachedWebView != null && (left != oldLeft || top != oldTop || right != oldRight || bottom != oldBottom)) {
-            refreshAspectAsync(attachedWebView, false);
-            if (wasInPip) {
+            if (!wasInPip) {
+                refreshAspectAsync(attachedWebView);
+            } else {
                 scheduleVideoRefresh();
             }
         }
@@ -184,7 +185,7 @@ public class PipControler {
     public void attachTo(WebView webView) {
         if (webView == null) return;
         this.attachedWebView = webView;
-        refreshAspectAsync(webView, false);
+        refreshAspectAsync(webView);
         webView.removeOnLayoutChangeListener(layoutChangeListener);
         webView.addOnLayoutChangeListener(layoutChangeListener);
     }
@@ -249,10 +250,10 @@ public class PipControler {
     }
 
     public void updateVideoAspectFromWebView(WebView webView) {
-        refreshAspectAsync(webView, wasInPip);
+        refreshAspectAsync(webView);
     }
 
-    private void refreshAspectAsync(WebView webView, boolean applyToActivePip) {
+    private void refreshAspectAsync(WebView webView) {
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O || webView == null) return;
         webView.evaluateJavascript(JS_FIND_LARGEST_VIDEO_NORM, result -> {
             if (result == null || "null".equals(result) || "\"null\"".equals(result)) {
@@ -274,15 +275,6 @@ public class PipControler {
                     detectedPortraitVideo = portrait;
                     detectedAspectRatio = clamped;
                     saveCurrentMode(portrait, clamped);
-
-                    if (applyToActivePip && activity != null && activity.isInPictureInPictureMode()) {
-                        try {
-                            PictureInPictureParams params = new PictureInPictureParams.Builder()
-                                    .setAspectRatio(clamped)
-                                    .build();
-                            activity.setPictureInPictureParams(params);
-                        } catch (Exception ignored) {}
-                    }
                 }
             } catch (Exception ignored) {}
         });
@@ -326,7 +318,7 @@ public class PipControler {
                 return;
             }
             if (attachedWebView != null) {
-                refreshAspectAsync(attachedWebView, false);
+                refreshAspectAsync(attachedWebView);
             }
             try {
                 PictureInPictureParams.Builder paramsBuilder = new PictureInPictureParams.Builder();
@@ -347,7 +339,6 @@ public class PipControler {
             if (webView != null) {
                 webView.onResume();
                 webView.resumeTimers();
-                refreshAspectAsync(webView, true);
             }
             scheduleVideoRefresh();
         } else if (wasInPip) {
