@@ -29,22 +29,24 @@ public class PipControler {
         AUTO
     }
 
+    // Prioritet dajemo aktivnom (ne-pauziranom) i vidljivom videu najveće površine
     private static final String JS_FIND_LARGEST_VIDEO_NORM =
             "(function() {" +
             "  try {" +
-            "    var vw = window.innerWidth || document.documentElement.clientWidth || 1;" +
-            "    var vh = window.innerHeight || document.documentElement.clientHeight || 1;" +
             "    var videos = Array.from(document.querySelectorAll('video'));" +
-            "    var best = null, bestRect = null, bestArea = 0;" +
+            "    var best = null, bestRect = null, bestScore = -1;" +
             "    for (var i = 0; i < videos.length; i++) {" +
-            "      var r = videos[i].getBoundingClientRect();" +
+            "      var v = videos[i];" +
+            "      var r = v.getBoundingClientRect();" +
             "      if (r.width <= 20 || r.height <= 20) continue;" +
-            "      var area = r.width * r.height;" +
-            "      if (area >= bestArea) { bestArea = area; best = videos[i]; bestRect = r; }" +
+            "      var activeBoost = (!v.paused && !v.ended && v.readyState >= 2) ? 1000000 : 1;" +
+            "      var score = activeBoost * (r.width * r.height);" +
+            "      if (score >= bestScore) { bestScore = score; best = v; bestRect = r; }" +
             "    }" +
             "    if (!best || !bestRect) return null;" +
             "    var mediaW = (best.videoWidth && best.videoWidth > 0) ? best.videoWidth : bestRect.width;" +
             "    var mediaH = (best.videoHeight && best.videoHeight > 0) ? best.videoHeight : bestRect.height;" +
+            "    if (!mediaW || !mediaH) return null;" +
             "    return JSON.stringify({" +
             "      width: mediaW," +
             "      height: mediaH," +
@@ -117,6 +119,7 @@ public class PipControler {
     private WebView attachedWebView;
     private Rational detectedAspectRatio = null;
     private boolean detectedPortraitVideo = false;
+    private Rational lastAppliedPipRatio = null;
 
     private final Runnable refreshVideoRunnable = () -> {
         if (wasInPip && attachedWebView != null) {
@@ -124,11 +127,20 @@ public class PipControler {
         }
     };
 
+    private final Runnable periodicAspectSyncRunnable = new Runnable() {
+        @Override
+        public void run() {
+            if (attachedWebView != null && !activity.isFinishing() && !activity.isDestroyed()) {
+                refreshAspectAsync(attachedWebView, wasInPip);
+                mainHandler.postDelayed(this, wasInPip ? 600 : 1200);
+            }
+        }
+    };
+
     private final View.OnLayoutChangeListener layoutChangeListener = (v, left, top, right, bottom, oldLeft, oldTop, oldRight, oldBottom) -> {
         if (attachedWebView != null && (left != oldLeft || top != oldTop || right != oldRight || bottom != oldBottom)) {
-            if (!wasInPip) {
-                refreshAspectAsync(attachedWebView);
-            } else {
+            refreshAspectAsync(attachedWebView, wasInPip);
+            if (wasInPip) {
                 scheduleVideoRefresh();
             }
         }
@@ -182,12 +194,30 @@ public class PipControler {
         mainHandler.postDelayed(refreshVideoRunnable, 120);
     }
 
+    private void startAspectSyncLoop() {
+        mainHandler.removeCallbacks(periodicAspectSyncRunnable);
+        mainHandler.post(periodicAspectSyncRunnable);
+    }
+
+    private void stopAspectSyncLoop() {
+        mainHandler.removeCallbacks(periodicAspectSyncRunnable);
+    }
+
     public void attachTo(WebView webView) {
         if (webView == null) return;
         this.attachedWebView = webView;
-        refreshAspectAsync(webView);
         webView.removeOnLayoutChangeListener(layoutChangeListener);
         webView.addOnLayoutChangeListener(layoutChangeListener);
+        refreshAspectAsync(webView, wasInPip);
+        startAspectSyncLoop();
+    }
+
+    public void detach() {
+        stopAspectSyncLoop();
+        if (attachedWebView != null) {
+            attachedWebView.removeOnLayoutChangeListener(layoutChangeListener);
+            attachedWebView = null;
+        }
     }
 
     public void setPipModeOn(Object value) {
@@ -250,10 +280,23 @@ public class PipControler {
     }
 
     public void updateVideoAspectFromWebView(WebView webView) {
-        refreshAspectAsync(webView);
+        refreshAspectAsync(webView, wasInPip);
     }
 
-    private void refreshAspectAsync(WebView webView) {
+    private void applyPipAspectRatioIfNeeded(Rational ratio, boolean forceUpdate) {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O || activity == null || ratio == null) return;
+        if (!activity.isInPictureInPictureMode()) return;
+        if (!forceUpdate && ratio.equals(lastAppliedPipRatio)) return;
+        try {
+            PictureInPictureParams params = new PictureInPictureParams.Builder()
+                    .setAspectRatio(ratio)
+                    .build();
+            activity.setPictureInPictureParams(params);
+            lastAppliedPipRatio = ratio;
+        } catch (Exception ignored) {}
+    }
+
+    private void refreshAspectAsync(WebView webView, boolean applyToActivePip) {
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O || webView == null) return;
         webView.evaluateJavascript(JS_FIND_LARGEST_VIDEO_NORM, result -> {
             if (result == null || "null".equals(result) || "\"null\"".equals(result)) {
@@ -272,9 +315,15 @@ public class PipControler {
                 if (w > 0 && h > 0) {
                     boolean portrait = obj.optBoolean("isPortrait", h > w);
                     Rational clamped = clampPipAspectRatio(w, h);
+                    boolean orientationOrRatioChanged = (portrait != detectedPortraitVideo)
+                            || (detectedAspectRatio == null || !clamped.equals(detectedAspectRatio));
                     detectedPortraitVideo = portrait;
                     detectedAspectRatio = clamped;
                     saveCurrentMode(portrait, clamped);
+
+                    if (applyToActivePip) {
+                        applyPipAspectRatioIfNeeded(clamped, orientationOrRatioChanged);
+                    }
                 }
             } catch (Exception ignored) {}
         });
@@ -317,14 +366,16 @@ public class PipControler {
             if (activity.isInPictureInPictureMode()) {
                 return;
             }
-            if (attachedWebView != null) {
-                refreshAspectAsync(attachedWebView);
-            }
+            Rational ratio = resolveAspectRatio();
+            lastAppliedPipRatio = ratio;
             try {
                 PictureInPictureParams.Builder paramsBuilder = new PictureInPictureParams.Builder();
-                paramsBuilder.setAspectRatio(resolveAspectRatio());
+                paramsBuilder.setAspectRatio(ratio);
                 activity.enterPictureInPictureMode(paramsBuilder.build());
             } catch (Exception ignored) {}
+            if (attachedWebView != null) {
+                refreshAspectAsync(attachedWebView, true);
+            }
         }
     }
 
@@ -339,10 +390,13 @@ public class PipControler {
             if (webView != null) {
                 webView.onResume();
                 webView.resumeTimers();
+                refreshAspectAsync(webView, true);
             }
+            startAspectSyncLoop();
             scheduleVideoRefresh();
         } else if (wasInPip) {
             wasInPip = false;
+            lastAppliedPipRatio = null;
             mainHandler.removeCallbacks(refreshVideoRunnable);
             resetWebViewTransform(webView);
             if (webView != null) {
@@ -355,8 +409,11 @@ public class PipControler {
                         "})();",
                         null
                 );
+                refreshAspectAsync(webView, false);
             }
+            startAspectSyncLoop();
             if (activity != null && (activity.isFinishing() || activity.isDestroyed())) {
+                stopAspectSyncLoop();
                 try {
                     activity.stopService(new Intent(activity, MediaService.class));
                 } catch (Exception ignored) {}
