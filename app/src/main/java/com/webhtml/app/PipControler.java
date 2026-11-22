@@ -6,22 +6,16 @@ import android.content.Context;
 import android.content.Intent;
 import android.content.SharedPreferences;
 import android.content.pm.PackageManager;
-import android.graphics.Bitmap;
-import android.graphics.Canvas;
-import android.graphics.Color;
-import android.graphics.Paint;
-import android.graphics.Rect;
-import android.graphics.RectF;
 import android.os.Build;
 import android.os.Handler;
 import android.os.Looper;
 import android.util.Rational;
 import android.view.View;
-import android.view.ViewGroup;
 import android.webkit.WebView;
-import android.widget.FrameLayout;
 
 import org.json.JSONObject;
+
+import java.util.Locale;
 
 public class PipControler {
 
@@ -31,86 +25,8 @@ public class PipControler {
     private static final String KEY_LAST_RATIO_DEN = "last_ratio_den";
 
     public enum PipMode {
-        OFF,        // false
-        AUTO        // true - automatski bira portrait ili landscape prema videu
-    }
-
-    public static class DimMaskView extends View {
-        private final Paint dimPaint = new Paint();
-        private final RectF videoRect = new RectF();
-        private boolean hasVideoRect = false;
-
-        public DimMaskView(Context context) {
-            super(context);
-            dimPaint.setColor(Color.parseColor("#FF000000"));
-            setClickable(false);
-            setFocusable(false);
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
-                setElevation(100f);
-            }
-        }
-
-        public void setVideoRect(float left, float top, float right, float bottom) {
-            int w = getWidth();
-            int h = getHeight();
-            if (w <= 0 || h <= 0) {
-                hasVideoRect = false;
-                invalidate();
-                return;
-            }
-
-            float clampedLeft = Math.max(0f, Math.min(left, w));
-            float clampedTop = Math.max(0f, Math.min(top, h));
-            float clampedRight = Math.max(clampedLeft, Math.min(right, w));
-            float clampedBottom = Math.max(clampedTop, Math.min(bottom, h));
-
-            videoRect.set(clampedLeft, clampedTop, clampedRight, clampedBottom);
-            hasVideoRect = (videoRect.width() > 4f && videoRect.height() > 4f);
-            invalidate();
-        }
-
-        public void clearVideoRect() {
-            hasVideoRect = false;
-            invalidate();
-        }
-
-        public Rect getVideoRectAsIntRect() {
-            if (!hasVideoRect) return null;
-            return new Rect(
-                    Math.round(videoRect.left),
-                    Math.round(videoRect.top),
-                    Math.round(videoRect.right),
-                    Math.round(videoRect.bottom)
-            );
-        }
-
-        @Override
-        protected void onDraw(Canvas canvas) {
-            super.onDraw(canvas);
-            if (getVisibility() != VISIBLE) return;
-
-            float w = getWidth();
-            float h = getHeight();
-            if (w <= 0 || h <= 0) return;
-
-            if (!hasVideoRect) {
-                canvas.drawRect(0, 0, w, h, dimPaint);
-                return;
-            }
-
-            if (videoRect.top > 0) {
-                canvas.drawRect(0, 0, w, videoRect.top, dimPaint);
-            }
-            if (videoRect.bottom < h) {
-                canvas.drawRect(0, videoRect.bottom, w, h, dimPaint);
-            }
-            if (videoRect.left > 0) {
-                canvas.drawRect(0, videoRect.top, videoRect.left, videoRect.bottom, dimPaint);
-            }
-            if (videoRect.right < w) {
-                canvas.drawRect(videoRect.right, videoRect.top, w, videoRect.bottom, dimPaint);
-            }
-        }
+        OFF,
+        AUTO
     }
 
     private static final String JS_FIND_LARGEST_VIDEO_NORM =
@@ -130,10 +46,6 @@ public class PipControler {
             "    var mediaW = (best.videoWidth && best.videoWidth > 0) ? best.videoWidth : bestRect.width;" +
             "    var mediaH = (best.videoHeight && best.videoHeight > 0) ? best.videoHeight : bestRect.height;" +
             "    return JSON.stringify({" +
-            "      nx1: bestRect.left / vw," +
-            "      ny1: bestRect.top / vh," +
-            "      nx2: bestRect.right / vw," +
-            "      ny2: bestRect.bottom / vh," +
             "      width: mediaW," +
             "      height: mediaH," +
             "      isPortrait: mediaH > mediaW" +
@@ -141,18 +53,20 @@ public class PipControler {
             "  } catch (e) { return null; }" +
             "})();";
 
-    private static final String JS_ISOLATE_VIDEO_FOR_PIP =
+    private static final String JS_ISOLATE_IF_PLAYING =
             "(function() {" +
             "  try {" +
             "    var videos = Array.from(document.querySelectorAll('video'));" +
             "    var best = null, bestArea = 0;" +
             "    for (var i = 0; i < videos.length; i++) {" +
-            "      var r = videos[i].getBoundingClientRect();" +
+            "      var v = videos[i];" +
+            "      var r = v.getBoundingClientRect();" +
             "      if (r.width <= 20 || r.height <= 20) continue;" +
+            "      if (v.paused || v.ended || v.readyState < 2) continue;" +
             "      var area = r.width * r.height;" +
-            "      if (area >= bestArea) { bestArea = area; best = videos[i]; }" +
+            "      if (area >= bestArea) { bestArea = area; best = v; }" +
             "    }" +
-            "    if (!best) return false;" +
+            "    if (!best) return JSON.stringify({ ok: false, t: -1 });" +
             "    if (best.getAttribute('data-pip-prev-style') === null) {" +
             "      best.setAttribute('data-pip-prev-style', best.getAttribute('style') || '');" +
             "    }" +
@@ -166,9 +80,19 @@ public class PipControler {
             "    best.style.setProperty('object-fit', 'contain', 'important');" +
             "    best.style.setProperty('z-index', '2147483647', 'important');" +
             "    best.style.setProperty('background', '#000000', 'important');" +
-            "    return true;" +
-            "  } catch (e) { return false; }" +
+            "    return JSON.stringify({ ok: true, t: best.currentTime || 0 });" +
+            "  } catch (e) { return JSON.stringify({ ok: false, t: -1 }); }" +
             "})();";
+
+    private static final String JS_VERIFY_VIDEO_MOVING =
+            "(function(prevT) {" +
+            "  try {" +
+            "    var v = document.querySelector('video[data-pip-prev-style]');" +
+            "    if (!v) return false;" +
+            "    if (v.paused || v.ended || v.readyState < 2) return false;" +
+            "    return (v.currentTime || 0) > prevT + 0.01;" +
+            "  } catch (e) { return false; }" +
+            "})(%s);";
 
     private static final String JS_RESTORE_VIDEO_FROM_PIP =
             "(function() {" +
@@ -190,28 +114,20 @@ public class PipControler {
     private PipMode pipMode = PipMode.OFF;
     private boolean suppressNextLeaveHint = false;
     private boolean wasInPip = false;
-    private DimMaskView dimView;
     private WebView attachedWebView;
     private Rational detectedAspectRatio = null;
     private boolean detectedPortraitVideo = false;
-    private Bitmap lastMotionSample = null;
 
-    private final Runnable refreshMaskRunnable = () -> {
+    private final Runnable refreshVideoRunnable = () -> {
         if (wasInPip && attachedWebView != null) {
-            applyVideoMaskFromWebView(attachedWebView);
-        }
-    };
-
-    private final Runnable refreshMaskDelayedRunnable = () -> {
-        if (wasInPip && attachedWebView != null) {
-            applyVideoMaskFromWebView(attachedWebView);
+            tryIsolateActiveVideo(attachedWebView);
         }
     };
 
     private final View.OnLayoutChangeListener layoutChangeListener = (v, left, top, right, bottom, oldLeft, oldTop, oldRight, oldBottom) -> {
         if (wasInPip && attachedWebView != null) {
             if (left != oldLeft || top != oldTop || right != oldRight || bottom != oldBottom) {
-                scheduleMaskRefresh();
+                scheduleVideoRefresh();
             }
         }
     };
@@ -259,63 +175,17 @@ public class PipControler {
         webView.setTranslationY(0f);
     }
 
-    private void scheduleMaskRefresh() {
-        mainHandler.removeCallbacks(refreshMaskRunnable);
-        mainHandler.removeCallbacks(refreshMaskDelayedRunnable);
-        mainHandler.postDelayed(refreshMaskRunnable, 40);
-        mainHandler.postDelayed(refreshMaskDelayedRunnable, 250);
+    private void scheduleVideoRefresh() {
+        mainHandler.removeCallbacks(refreshVideoRunnable);
+        mainHandler.postDelayed(refreshVideoRunnable, 120);
     }
 
     public void attachTo(WebView webView) {
         if (webView == null) return;
         this.attachedWebView = webView;
         updateVideoAspectFromWebView(webView);
-
-        if (dimView == null) {
-            dimView = new DimMaskView(webView.getContext());
-            dimView.setVisibility(View.GONE);
-            dimView.addOnLayoutChangeListener(layoutChangeListener);
-        }
         webView.removeOnLayoutChangeListener(layoutChangeListener);
         webView.addOnLayoutChangeListener(layoutChangeListener);
-
-        if (dimView.getParent() != null) {
-            return;
-        }
-        ViewGroup parent = (ViewGroup) webView.getParent();
-        if (parent == null) return;
-
-        if (parent instanceof FrameLayout) {
-            FrameLayout.LayoutParams lp = new FrameLayout.LayoutParams(
-                    ViewGroup.LayoutParams.MATCH_PARENT,
-                    ViewGroup.LayoutParams.MATCH_PARENT
-            );
-            parent.addView(dimView, lp);
-            dimView.bringToFront();
-        } else {
-            int index = parent.indexOfChild(webView);
-            FrameLayout wrapper = new FrameLayout(webView.getContext());
-            wrapper.setLayoutParams(webView.getLayoutParams());
-            parent.removeViewAt(index);
-            wrapper.addView(webView, new FrameLayout.LayoutParams(
-                    ViewGroup.LayoutParams.MATCH_PARENT,
-                    ViewGroup.LayoutParams.MATCH_PARENT
-            ));
-            wrapper.addView(dimView, new FrameLayout.LayoutParams(
-                    ViewGroup.LayoutParams.MATCH_PARENT,
-                    ViewGroup.LayoutParams.MATCH_PARENT
-            ));
-            parent.addView(wrapper, index);
-            dimView.bringToFront();
-        }
-    }
-
-    public void setDimView(DimMaskView dimView) {
-        this.dimView = dimView;
-        if (this.dimView != null) {
-            this.dimView.removeOnLayoutChangeListener(layoutChangeListener);
-            this.dimView.addOnLayoutChangeListener(layoutChangeListener);
-        }
     }
 
     public void setPipModeOn(Object value) {
@@ -396,20 +266,9 @@ public class PipControler {
                 if (w > 0 && h > 0) {
                     boolean portrait = obj.optBoolean("isPortrait", h > w);
                     Rational clamped = clampPipAspectRatio(w, h);
-                    boolean changed = (portrait != detectedPortraitVideo)
-                            || (detectedAspectRatio == null)
-                            || (Math.abs(clamped.floatValue() - detectedAspectRatio.floatValue()) > 0.05f);
                     detectedPortraitVideo = portrait;
                     detectedAspectRatio = clamped;
                     saveCurrentMode(portrait, clamped);
-
-                    if (changed && wasInPip && !activity.isFinishing() && !activity.isDestroyed()) {
-                        try {
-                            PictureInPictureParams.Builder b = new PictureInPictureParams.Builder();
-                            b.setAspectRatio(resolveAspectRatio());
-                            activity.setPictureInPictureParams(b.build());
-                        } catch (Exception ignored) {}
-                    }
                 }
             } catch (Exception ignored) {}
         });
@@ -458,12 +317,6 @@ public class PipControler {
             try {
                 PictureInPictureParams.Builder paramsBuilder = new PictureInPictureParams.Builder();
                 paramsBuilder.setAspectRatio(resolveAspectRatio());
-                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S && dimView != null) {
-                    Rect hint = dimView.getVideoRectAsIntRect();
-                    if (hint != null) {
-                        paramsBuilder.setSourceRectHint(hint);
-                    }
-                }
                 activity.enterPictureInPictureMode(paramsBuilder.build());
             } catch (Exception ignored) {}
         }
@@ -481,24 +334,11 @@ public class PipControler {
                 webView.onResume();
                 webView.resumeTimers();
             }
-            if (dimView != null) {
-                dimView.clearVideoRect();
-                dimView.setVisibility(View.GONE);
-            }
-            scheduleMaskRefresh();
+            scheduleVideoRefresh();
         } else if (wasInPip) {
             wasInPip = false;
-            mainHandler.removeCallbacks(refreshMaskRunnable);
-            mainHandler.removeCallbacks(refreshMaskDelayedRunnable);
-            if (lastMotionSample != null && !lastMotionSample.isRecycled()) {
-                lastMotionSample.recycle();
-                lastMotionSample = null;
-            }
+            mainHandler.removeCallbacks(refreshVideoRunnable);
             resetWebViewTransform(webView);
-            if (dimView != null) {
-                dimView.clearVideoRect();
-                dimView.setVisibility(View.GONE);
-            }
             if (webView != null) {
                 webView.evaluateJavascript(
                         JS_RESTORE_VIDEO_FROM_PIP +
@@ -518,18 +358,47 @@ public class PipControler {
         }
     }
 
-    private void applyVideoMaskFromWebView(WebView webView) {
+    private void useDefaultPipFallback(WebView webView) {
+        if (webView == null) return;
+        resetWebViewTransform(webView);
+        webView.evaluateJavascript(JS_RESTORE_VIDEO_FROM_PIP, null);
+    }
+
+    private void tryIsolateActiveVideo(WebView webView) {
         if (!wasInPip || webView == null) return;
         resetWebViewTransform(webView);
         updateVideoAspectFromWebView(webView);
-        webView.evaluateJavascript(JS_ISOLATE_VIDEO_FOR_PIP, result -> {
+
+        webView.evaluateJavascript(JS_ISOLATE_IF_PLAYING, raw -> {
             if (!wasInPip) return;
-            boolean isolated = "true".equalsIgnoreCase(String.valueOf(result).replace("\"", "").trim());
-            if (!isolated && dimView != null) {
-                dimView.setVisibility(View.VISIBLE);
-                dimView.clearVideoRect();
-                dimView.bringToFront();
-                dimView.invalidate();
+            try {
+                String clean = raw == null ? "" : raw.trim();
+                if (clean.startsWith("\"") && clean.endsWith("\"") && clean.length() >= 2) {
+                    clean = clean.substring(1, clean.length() - 1)
+                            .replace("\\\"", "\"")
+                            .replace("\\\\", "\\");
+                }
+                JSONObject obj = new JSONObject(clean);
+                boolean ok = obj.optBoolean("ok", false);
+                double startTime = obj.optDouble("t", -1);
+                if (!ok || startTime < 0) {
+                    useDefaultPipFallback(webView);
+                    return;
+                }
+
+                mainHandler.postDelayed(() -> {
+                    if (!wasInPip || attachedWebView == null) return;
+                    String verifyJs = String.format(Locale.US, JS_VERIFY_VIDEO_MOVING, startTime);
+                    attachedWebView.evaluateJavascript(verifyJs, movingRaw -> {
+                        if (!wasInPip) return;
+                        boolean moving = "true".equalsIgnoreCase(String.valueOf(movingRaw).replace("\"", "").trim());
+                        if (!moving) {
+                            useDefaultPipFallback(attachedWebView);
+                        }
+                    });
+                }, 350);
+            } catch (Exception e) {
+                useDefaultPipFallback(webView);
             }
         });
     }
