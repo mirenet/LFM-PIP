@@ -1,87 +1,241 @@
 package com.webhtml.app;
 
+import android.os.Handler;
+import android.os.Looper;
 import android.view.MotionEvent;
 import android.view.View;
+import android.view.ViewGroup;
 import android.webkit.WebView;
 
 public class MenuControler {
 
-    private int tapCount = 0;
-    private long lastTapTime = 0;
-    private float lastX = 0;
-    private float lastY = 0;
+    // Long-press delay in seconds..
+    private static final long HOLD_DELAY_MS = 1500L;
+
+    private static final int REQUIRED_FINGERS = 1;
+
+    // Maksimalno dozvoljeno pomeranje prsta dok se čeka delay (u pikselima)
+    private static final float MOVE_SLOP_PX = 25.0f;
+
     private final WebView overlayWebView;
-    
-    private static final long TAP_TIMEOUT = 250; // Strogo brzo kuckanje
-    private static final float MAX_DISTANCE_PX = 50.0f; // U istoj tački
-    private static final float MOVE_SLOP = 20.0f;
-    private float startX = 0;
-    private float startY = 0;
+    private final Handler holdHandler = new Handler(Looper.getMainLooper());
+
+    private boolean holdScheduled = false;
+    private boolean menuTriggered = false;
+    private boolean consumeUntilRelease = false;
+    private boolean longClickGuardAttached = false;
+    private float[] initialX;
+    private float[] initialY;
+
+    private final Runnable holdRunnable = new Runnable() {
+        @Override
+        public void run() {
+            holdScheduled = false;
+            if (isMenuVisible()) {
+                return;
+            }
+            menuTriggered = true;
+            consumeUntilRelease = true;
+            cancelUnderlyingTouches();
+            clearSelectionOnUnderlyingWebViews();
+            toggleMenu();
+        }
+    };
 
     public MenuControler(WebView overlayWebView) {
         this.overlayWebView = overlayWebView;
+        ensureLongClickGuard();
     }
 
     public boolean handleTouchEvent(MotionEvent event) {
-        // KADA JE MENI VEĆ OTVOREN: Ignorišemo sve tapove da se ne bi zatvorio na dalje kuckanje
+        ensureLongClickGuard();
+
+        int action = event.getActionMasked();
+        int pointerCount = event.getPointerCount();
+
+        if (consumeUntilRelease) {
+            if (action == MotionEvent.ACTION_UP || action == MotionEvent.ACTION_CANCEL) {
+                consumeUntilRelease = false;
+                menuTriggered = false;
+            }
+            return true;
+        }
+
         if (isMenuVisible()) {
+            cancelHold();
+            menuTriggered = false;
             return false;
         }
 
-        int action = event.getActionMasked();
-
         switch (action) {
             case MotionEvent.ACTION_DOWN:
-                if (event.getPointerCount() > 1) {
-                    tapCount = 0;
-                    return false;
-                }
-
-                long currentTime = System.currentTimeMillis();
-                float currentX = event.getX();
-                float currentY = event.getY();
-                
-                startX = currentX;
-                startY = currentY;
-
-                if (tapCount > 0) {
-                    float distance = (float) Math.hypot(currentX - lastX, currentY - lastY);
-                    if ((currentTime - lastTapTime > TAP_TIMEOUT) || (distance > MAX_DISTANCE_PX)) {
-                        tapCount = 0;
-                    }
-                }
-
-                lastTapTime = currentTime;
-                lastX = currentX;
-                lastY = currentY;
-                tapCount++;
-
-                if (tapCount >= 6) {
-                    tapCount = 0;
-                    toggleMenu();
-                    return true;
+            case MotionEvent.ACTION_POINTER_DOWN:
+                menuTriggered = false;
+                if (pointerCount == REQUIRED_FINGERS) {
+                    recordInitialPointers(event);
+                    scheduleHold();
+                } else {
+                    cancelHold();
                 }
                 break;
 
             case MotionEvent.ACTION_MOVE:
-                if (tapCount > 0) {
-                    float moveX = Math.abs(event.getX() - startX);
-                    float moveY = Math.abs(event.getY() - startY);
-                    if (moveX > MOVE_SLOP || moveY > MOVE_SLOP) {
-                        tapCount = 0;
+                if (menuTriggered) {
+                    return true;
+                }
+                if (holdScheduled) {
+                    if (pointerCount != REQUIRED_FINGERS || hasMovedBeyondSlop(event)) {
+                        cancelHold();
                     }
                 }
                 break;
 
-            case MotionEvent.ACTION_POINTER_DOWN:
-                tapCount = 0;
+            case MotionEvent.ACTION_POINTER_UP:
+                if (menuTriggered) {
+                    return true;
+                }
+                if (holdScheduled && (pointerCount - 1) < REQUIRED_FINGERS) {
+                    cancelHold();
+                }
+                break;
+
+            case MotionEvent.ACTION_UP:
+                cancelHold();
+                if (menuTriggered) {
+                    menuTriggered = false;
+                    return true;
+                }
+                menuTriggered = false;
+                break;
+
+            case MotionEvent.ACTION_CANCEL:
+                if (menuTriggered) {
+                    menuTriggered = false;
+                    return true;
+                }
                 break;
         }
 
         return false;
     }
 
+    private void ensureLongClickGuard() {
+        if (longClickGuardAttached || overlayWebView == null) return;
+        View root = overlayWebView.getRootView();
+        if (root instanceof ViewGroup) {
+            attachLongClickGuardRecursive((ViewGroup) root);
+            longClickGuardAttached = true;
+        }
+    }
+
+    private void attachLongClickGuardRecursive(ViewGroup group) {
+        for (int i = 0; i < group.getChildCount(); i++) {
+            View child = group.getChildAt(i);
+            if (child instanceof WebView && child != overlayWebView) {
+                WebView target = (WebView) child;
+                target.setOnLongClickListener(new View.OnLongClickListener() {
+                    @Override
+                    public boolean onLongClick(View v) {
+                        WebView.HitTestResult hit = target.getHitTestResult();
+                        if (hit != null) {
+                            int type = hit.getType();
+                            if (type == WebView.HitTestResult.SRC_ANCHOR_TYPE ||
+                                type == WebView.HitTestResult.SRC_IMAGE_ANCHOR_TYPE) {
+                                return true;
+                            }
+                        }
+                        return false;
+                    }
+                });
+            } else if (child instanceof ViewGroup) {
+                attachLongClickGuardRecursive((ViewGroup) child);
+            }
+        }
+    }
+
+    public void cancelGesture() {
+        cancelHold();
+        menuTriggered = false;
+        consumeUntilRelease = false;
+    }
+
+    private void scheduleHold() {
+        holdHandler.removeCallbacks(holdRunnable);
+        holdScheduled = true;
+        holdHandler.postDelayed(holdRunnable, HOLD_DELAY_MS);
+    }
+
+    private void cancelHold() {
+        holdScheduled = false;
+        holdHandler.removeCallbacks(holdRunnable);
+    }
+
+    private void recordInitialPointers(MotionEvent event) {
+        int count = event.getPointerCount();
+        initialX = new float[count];
+        initialY = new float[count];
+        for (int i = 0; i < count; i++) {
+            initialX[i] = event.getX(i);
+            initialY[i] = event.getY(i);
+        }
+    }
+
+    private boolean hasMovedBeyondSlop(MotionEvent event) {
+        if (initialX == null || initialY == null || event.getPointerCount() != initialX.length) {
+            return true;
+        }
+        for (int i = 0; i < initialX.length; i++) {
+            float dx = Math.abs(event.getX(i) - initialX[i]);
+            float dy = Math.abs(event.getY(i) - initialY[i]);
+            if (dx > MOVE_SLOP_PX || dy > MOVE_SLOP_PX) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private void cancelUnderlyingTouches() {
+        if (overlayWebView == null) return;
+        View root = overlayWebView.getRootView();
+        if (root == null) return;
+
+        long now = android.os.SystemClock.uptimeMillis();
+        MotionEvent cancelEvent = MotionEvent.obtain(now, now, MotionEvent.ACTION_CANCEL, 0f, 0f, 0);
+        try {
+            root.dispatchTouchEvent(cancelEvent);
+        } finally {
+            cancelEvent.recycle();
+        }
+    }
+
+    private void clearSelectionOnUnderlyingWebViews() {
+        if (overlayWebView == null) return;
+        View root = overlayWebView.getRootView();
+        if (root instanceof ViewGroup) {
+            clearSelectionRecursive((ViewGroup) root);
+        }
+    }
+
+    private void clearSelectionRecursive(ViewGroup group) {
+        for (int i = 0; i < group.getChildCount(); i++) {
+            View child = group.getChildAt(i);
+            if (child instanceof WebView && child != overlayWebView) {
+                WebView target = (WebView) child;
+                target.clearFocus();
+                if (target.getSettings().getJavaScriptEnabled()) {
+                    target.evaluateJavascript(
+                        "(function(){try{var s=window.getSelection();if(s){s.removeAllRanges();}}catch(e){}})();",
+                        null
+                    );
+                }
+            } else if (child instanceof ViewGroup) {
+                clearSelectionRecursive((ViewGroup) child);
+            }
+        }
+    }
+
     public void toggleMenu() {
+        cancelHold();
         if (overlayWebView != null) {
             if (overlayWebView.getVisibility() == View.VISIBLE) {
                 overlayWebView.setVisibility(View.GONE);
@@ -92,6 +246,7 @@ public class MenuControler {
     }
 
     public void closeMenu() {
+        cancelGesture();
         if (overlayWebView != null) {
             overlayWebView.setVisibility(View.GONE);
         }
