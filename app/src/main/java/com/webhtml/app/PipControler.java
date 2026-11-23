@@ -6,6 +6,7 @@ import android.content.Context;
 import android.content.Intent;
 import android.content.SharedPreferences;
 import android.content.pm.PackageManager;
+import android.net.Uri;
 import android.os.Build;
 import android.os.Handler;
 import android.os.Looper;
@@ -23,13 +24,13 @@ public class PipControler {
     private static final String KEY_LAST_PORTRAIT = "last_was_portrait";
     private static final String KEY_LAST_RATIO_NUM = "last_ratio_num";
     private static final String KEY_LAST_RATIO_DEN = "last_ratio_den";
+    private static final int MAX_ISOLATION_RETRIES = 2;
 
     public enum PipMode {
         OFF,
         AUTO
     }
 
-    // Prioritet dajemo aktivnom (ne-pauziranom) i vidljivom videu najveće površine
     private static final String JS_FIND_LARGEST_VIDEO_NORM =
             "(function() {" +
             "  try {" +
@@ -39,7 +40,8 @@ public class PipControler {
             "      var v = videos[i];" +
             "      var r = v.getBoundingClientRect();" +
             "      if (r.width <= 20 || r.height <= 20) continue;" +
-            "      var activeBoost = (!v.paused && !v.ended && v.readyState >= 2) ? 1000000 : 1;" +
+            "      var playing = (!v.paused && !v.ended && v.readyState >= 2);" +
+            "      var activeBoost = playing ? 1000000 : 1;" +
             "      var score = activeBoost * (r.width * r.height);" +
             "      if (score >= bestScore) { bestScore = score; best = v; bestRect = r; }" +
             "    }" +
@@ -50,7 +52,8 @@ public class PipControler {
             "    return JSON.stringify({" +
             "      width: mediaW," +
             "      height: mediaH," +
-            "      isPortrait: mediaH > mediaW" +
+            "      isPortrait: mediaH > mediaW," +
+            "      playing: (!best.paused && !best.ended && best.readyState >= 2)" +
             "    });" +
             "  } catch (e) { return null; }" +
             "})();";
@@ -68,33 +71,42 @@ public class PipControler {
             "      var area = r.width * r.height;" +
             "      if (area >= bestArea) { bestArea = area; best = v; }" +
             "    }" +
-            "    if (!best) return JSON.stringify({ ok: false, t: -1 });" +
-            "    if (best.getAttribute('data-pip-prev-style') === null) {" +
+            "    if (!best) return JSON.stringify({ ok: false, reason: 'no_active_video' });" +
+            "    var alreadyIsolated = (best.getAttribute('data-pip-prev-style') !== null);" +
+            "    var csBefore = window.getComputedStyle(best);" +
+            "    if (!alreadyIsolated) {" +
             "      best.setAttribute('data-pip-prev-style', best.getAttribute('style') || '');" +
+            "      best.style.setProperty('position', 'fixed', 'important');" +
+            "      best.style.setProperty('top', '0', 'important');" +
+            "      best.style.setProperty('left', '0', 'important');" +
+            "      best.style.setProperty('width', '100vw', 'important');" +
+            "      best.style.setProperty('height', '100vh', 'important');" +
+            "      best.style.setProperty('max-width', '100vw', 'important');" +
+            "      best.style.setProperty('max-height', '100vh', 'important');" +
+            "      best.style.setProperty('object-fit', 'contain', 'important');" +
+            "      best.style.setProperty('z-index', '2147483647', 'important');" +
+            "      best.style.setProperty('background', '#000000', 'important');" +
+            "    } else if (csBefore.position !== 'fixed') {" +
+            "      best.style.setProperty('position', 'fixed', 'important');" +
+            "      best.style.setProperty('top', '0', 'important');" +
+            "      best.style.setProperty('left', '0', 'important');" +
+            "      best.style.setProperty('width', '100vw', 'important');" +
+            "      best.style.setProperty('height', '100vh', 'important');" +
+            "      best.style.setProperty('max-width', '100vw', 'important');" +
+            "      best.style.setProperty('max-height', '100vh', 'important');" +
+            "      best.style.setProperty('object-fit', 'contain', 'important');" +
+            "      best.style.setProperty('z-index', '2147483647', 'important');" +
+            "      best.style.setProperty('background', '#000000', 'important');" +
             "    }" +
-            "    best.style.setProperty('position', 'fixed', 'important');" +
-            "    best.style.setProperty('top', '0', 'important');" +
-            "    best.style.setProperty('left', '0', 'important');" +
-            "    best.style.setProperty('width', '100vw', 'important');" +
-            "    best.style.setProperty('height', '100vh', 'important');" +
-            "    best.style.setProperty('max-width', '100vw', 'important');" +
-            "    best.style.setProperty('max-height', '100vh', 'important');" +
-            "    best.style.setProperty('object-fit', 'contain', 'important');" +
-            "    best.style.setProperty('z-index', '2147483647', 'important');" +
-            "    best.style.setProperty('background', '#000000', 'important');" +
-            "    return JSON.stringify({ ok: true, t: best.currentTime || 0 });" +
-            "  } catch (e) { return JSON.stringify({ ok: false, t: -1 }); }" +
+            "    var csAfter = window.getComputedStyle(best);" +
+            "    var rAfter = best.getBoundingClientRect();" +
+            "    var styleApplied = (csAfter.position === 'fixed') && (rAfter.width > 20) && (rAfter.height > 20);" +
+            "    if (!styleApplied) {" +
+            "      return JSON.stringify({ ok: false, reason: 'style_not_applied' });" +
+            "    }" +
+            "    return JSON.stringify({ ok: true, already: alreadyIsolated });" +
+            "  } catch (e) { return JSON.stringify({ ok: false, reason: 'error' }); }" +
             "})();";
-
-    private static final String JS_VERIFY_VIDEO_MOVING =
-            "(function(prevT) {" +
-            "  try {" +
-            "    var v = document.querySelector('video[data-pip-prev-style]');" +
-            "    if (!v) return false;" +
-            "    if (v.paused || v.ended || v.readyState < 2) return false;" +
-            "    return (v.currentTime || 0) > prevT + 0.01;" +
-            "  } catch (e) { return false; }" +
-            "})(%s);";
 
     private static final String JS_RESTORE_VIDEO_FROM_PIP =
             "(function() {" +
@@ -121,6 +133,10 @@ public class PipControler {
     private boolean detectedPortraitVideo = false;
     private Rational lastAppliedPipRatio = null;
 
+    private String currentHost = null;
+    private String knownWorkingIsolationHost = null;
+    private int failedIsolationAttempts = 0;
+
     private final Runnable refreshVideoRunnable = () -> {
         if (wasInPip && attachedWebView != null) {
             tryIsolateActiveVideo(attachedWebView);
@@ -131,17 +147,22 @@ public class PipControler {
         @Override
         public void run() {
             if (attachedWebView != null && !activity.isFinishing() && !activity.isDestroyed()) {
-                refreshAspectAsync(attachedWebView, wasInPip);
-                mainHandler.postDelayed(this, wasInPip ? 600 : 1200);
+                syncSiteHost(attachedWebView);
+                refreshAspectAsync(attachedWebView, wasInPip, false);
+                if (wasInPip) {
+                    tryIsolateActiveVideo(attachedWebView);
+                }
+                mainHandler.postDelayed(this, wasInPip ? 600 : 1000);
             }
         }
     };
 
     private final View.OnLayoutChangeListener layoutChangeListener = (v, left, top, right, bottom, oldLeft, oldTop, oldRight, oldBottom) -> {
         if (attachedWebView != null && (left != oldLeft || top != oldTop || right != oldRight || bottom != oldBottom)) {
-            refreshAspectAsync(attachedWebView, wasInPip);
+            syncSiteHost(attachedWebView);
+            refreshAspectAsync(attachedWebView, wasInPip, false);
             if (wasInPip) {
-                scheduleVideoRefresh();
+                scheduleVideoRefresh(120);
             }
         }
     };
@@ -150,6 +171,29 @@ public class PipControler {
         this.activity = activity;
         loadSavedMode();
         setPipModeOn(pipModeValue);
+    }
+
+    private String extractHost(String url) {
+        if (url == null || url.trim().isEmpty()) return null;
+        try {
+            Uri uri = Uri.parse(url.trim());
+            String host = uri.getHost();
+            if (host == null) return null;
+            host = host.toLowerCase(Locale.US);
+            return host.startsWith("www.") ? host.substring(4) : host;
+        } catch (Exception e) {
+            return null;
+        }
+    }
+
+    private void syncSiteHost(WebView webView) {
+        if (webView == null) return;
+        String newHost = extractHost(webView.getUrl());
+        if (newHost != null && !newHost.equals(currentHost)) {
+            currentHost = newHost;
+            knownWorkingIsolationHost = null;
+            failedIsolationAttempts = 0;
+        }
     }
 
     private SharedPreferences getPrefs() {
@@ -189,9 +233,9 @@ public class PipControler {
         webView.setTranslationY(0f);
     }
 
-    private void scheduleVideoRefresh() {
+    private void scheduleVideoRefresh(long delayMs) {
         mainHandler.removeCallbacks(refreshVideoRunnable);
-        mainHandler.postDelayed(refreshVideoRunnable, 120);
+        mainHandler.postDelayed(refreshVideoRunnable, delayMs);
     }
 
     private void startAspectSyncLoop() {
@@ -206,14 +250,16 @@ public class PipControler {
     public void attachTo(WebView webView) {
         if (webView == null) return;
         this.attachedWebView = webView;
+        syncSiteHost(webView);
         webView.removeOnLayoutChangeListener(layoutChangeListener);
         webView.addOnLayoutChangeListener(layoutChangeListener);
-        refreshAspectAsync(webView, wasInPip);
+        refreshAspectAsync(webView, wasInPip, false);
         startAspectSyncLoop();
     }
 
     public void detach() {
         stopAspectSyncLoop();
+        mainHandler.removeCallbacks(refreshVideoRunnable);
         if (attachedWebView != null) {
             attachedWebView.removeOnLayoutChangeListener(layoutChangeListener);
             attachedWebView = null;
@@ -280,7 +326,8 @@ public class PipControler {
     }
 
     public void updateVideoAspectFromWebView(WebView webView) {
-        refreshAspectAsync(webView, wasInPip);
+        syncSiteHost(webView);
+        refreshAspectAsync(webView, wasInPip, false);
     }
 
     private void applyPipAspectRatioIfNeeded(Rational ratio, boolean forceUpdate) {
@@ -296,7 +343,7 @@ public class PipControler {
         } catch (Exception ignored) {}
     }
 
-    private void refreshAspectAsync(WebView webView, boolean applyToActivePip) {
+    private void refreshAspectAsync(WebView webView, boolean applyToActivePip, boolean onlyIfPlaying) {
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O || webView == null) return;
         webView.evaluateJavascript(JS_FIND_LARGEST_VIDEO_NORM, result -> {
             if (result == null || "null".equals(result) || "\"null\"".equals(result)) {
@@ -310,6 +357,9 @@ public class PipControler {
                             .replace("\\\\", "\\");
                 }
                 JSONObject obj = new JSONObject(clean);
+                if (onlyIfPlaying && !obj.optBoolean("playing", false)) {
+                    return;
+                }
                 double w = obj.optDouble("width", 0);
                 double h = obj.optDouble("height", 0);
                 if (w > 0 && h > 0) {
@@ -366,6 +416,10 @@ public class PipControler {
             if (activity.isInPictureInPictureMode()) {
                 return;
             }
+            if (attachedWebView != null) {
+                syncSiteHost(attachedWebView);
+            }
+            failedIsolationAttempts = 0;
             Rational ratio = resolveAspectRatio();
             lastAppliedPipRatio = ratio;
             try {
@@ -374,7 +428,7 @@ public class PipControler {
                 activity.enterPictureInPictureMode(paramsBuilder.build());
             } catch (Exception ignored) {}
             if (attachedWebView != null) {
-                refreshAspectAsync(attachedWebView, true);
+                refreshAspectAsync(attachedWebView, true, false);
             }
         }
     }
@@ -383,6 +437,8 @@ public class PipControler {
         if (isInPictureInPictureMode) {
             wasInPip = true;
             this.attachedWebView = webView;
+            syncSiteHost(webView);
+            failedIsolationAttempts = 0;
             resetWebViewTransform(webView);
             if (overlayWebView != null) {
                 overlayWebView.setVisibility(View.GONE);
@@ -390,13 +446,14 @@ public class PipControler {
             if (webView != null) {
                 webView.onResume();
                 webView.resumeTimers();
-                refreshAspectAsync(webView, true);
+                refreshAspectAsync(webView, true, false);
             }
             startAspectSyncLoop();
-            scheduleVideoRefresh();
+            scheduleVideoRefresh(120);
         } else if (wasInPip) {
             wasInPip = false;
             lastAppliedPipRatio = null;
+            failedIsolationAttempts = 0;
             mainHandler.removeCallbacks(refreshVideoRunnable);
             resetWebViewTransform(webView);
             if (webView != null) {
@@ -409,7 +466,7 @@ public class PipControler {
                         "})();",
                         null
                 );
-                refreshAspectAsync(webView, false);
+                refreshAspectAsync(webView, false, false);
             }
             startAspectSyncLoop();
             if (activity != null && (activity.isFinishing() || activity.isDestroyed())) {
@@ -427,9 +484,25 @@ public class PipControler {
         webView.evaluateJavascript(JS_RESTORE_VIDEO_FROM_PIP, null);
     }
 
+    private void handleIsolationFailure(WebView webView) {
+        if (webView == null) return;
+        if (currentHost != null && currentHost.equals(knownWorkingIsolationHost)) {
+            return;
+        }
+
+        useDefaultPipFallback(webView);
+
+        if (wasInPip && failedIsolationAttempts < MAX_ISOLATION_RETRIES) {
+            failedIsolationAttempts++;
+            scheduleVideoRefresh(450);
+        }
+    }
+
     private void tryIsolateActiveVideo(WebView webView) {
         if (!wasInPip || webView == null) return;
+        syncSiteHost(webView);
         resetWebViewTransform(webView);
+        refreshAspectAsync(webView, true, true);
 
         webView.evaluateJavascript(JS_ISOLATE_IF_PLAYING, raw -> {
             if (!wasInPip || attachedWebView == null) return;
@@ -442,25 +515,17 @@ public class PipControler {
                 }
                 JSONObject obj = new JSONObject(clean);
                 boolean ok = obj.optBoolean("ok", false);
-                double startTime = obj.optDouble("t", -1);
-                if (!ok || startTime < 0) {
-                    useDefaultPipFallback(attachedWebView);
+                if (!ok) {
+                    handleIsolationFailure(attachedWebView);
                     return;
                 }
 
-                mainHandler.postDelayed(() -> {
-                    if (!wasInPip || attachedWebView == null) return;
-                    String verifyJs = String.format(Locale.US, JS_VERIFY_VIDEO_MOVING, startTime);
-                    attachedWebView.evaluateJavascript(verifyJs, movingRaw -> {
-                        if (!wasInPip || attachedWebView == null) return;
-                        boolean moving = "true".equalsIgnoreCase(String.valueOf(movingRaw).replace("\"", "").trim());
-                        if (!moving) {
-                            useDefaultPipFallback(attachedWebView);
-                        }
-                    });
-                }, 220);
+                failedIsolationAttempts = 0;
+                if (currentHost != null) {
+                    knownWorkingIsolationHost = currentHost;
+                }
             } catch (Exception e) {
-                useDefaultPipFallback(attachedWebView);
+                handleIsolationFailure(attachedWebView);
             }
         });
     }
