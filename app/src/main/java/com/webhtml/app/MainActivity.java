@@ -453,6 +453,11 @@ public class MainActivity extends AppCompatActivity {
             }
 
             @Override
+            public Bitmap getDefaultVideoPoster() {
+            return BitmapFactory.decodeResource(getResources(), R.drawable.video);
+            }
+
+            @Override
             public void onGeolocationPermissionsShowPrompt(String origin, GeolocationPermissions.Callback callback) {
                 if (androidx.core.content.ContextCompat.checkSelfPermission(MainActivity.this,
                         android.Manifest.permission.ACCESS_FINE_LOCATION) == android.content.pm.PackageManager.PERMISSION_GRANTED) {
