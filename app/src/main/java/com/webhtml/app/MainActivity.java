@@ -47,6 +47,9 @@ import java.util.List;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
+import android.graphics.Bitmap;
+import android.graphics.BitmapFactory;
+
 public class MainActivity extends AppCompatActivity {
 
     private List<String> externalDomains = new ArrayList<>();
